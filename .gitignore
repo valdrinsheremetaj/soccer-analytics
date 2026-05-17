@@ -430,3 +430,7 @@ FodyWeavers.xsd
 
 /.vscode
 /data
+
+.DS_Store
+**/.DS_Store
+._*
