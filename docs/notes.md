@@ -100,3 +100,17 @@ SOCCER-ANALYTICS/
 ├── README.md
 ├── requirements.txt
 └── .gitignore
+
+---
+
+## 2026-05-19 — Stream Replay and Streaming Job Added
+
+**Author:** Diego
+
+### What was added
+
+Two new scripts were added:
+
+```text
+src/replay_full_game.py
+src/streaming_job.py
