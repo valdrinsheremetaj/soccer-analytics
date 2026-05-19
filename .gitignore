@@ -434,3 +434,5 @@ FodyWeavers.xsd
 .DS_Store
 **/.DS_Store
 ._*
+
+checkpoints/

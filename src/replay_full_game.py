@@ -2,10 +2,9 @@ from pathlib import Path
 import shutil
 import time
 
-from src.config import CHUNKED_FULL_GAME_PATH
+from src.config import CHUNKED_FULL_GAME_PATH, REPLAY_SLEEP_SECONDS
 
 STREAM_INPUT_PATH = Path("data/stream_input")
-REPLAY_SLEEP_SECONDS = 0.05
 
 
 def replay_full_game() -> None:
