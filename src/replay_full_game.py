@@ -7,7 +7,7 @@ from src.config import CHUNKED_FULL_GAME_PATH
 
 STREAM_INPUT_PATH = Path("data/stream_input")
 # Slowed down to 0.5 to allow Spark to process smoothly without lagging
-REPLAY_SLEEP_SECONDS = 0.5
+REPLAY_SLEEP_SECONDS = 1
 
 
 def replay_full_game() -> None:

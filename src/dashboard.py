@@ -11,7 +11,8 @@ import streamlit as st
 from src.config import FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX, BALL_IDS_BY_HALF, TEAM_A_PLAYERS, TEAM_B_PLAYERS, REFEREE
 
 POSITIONS_PATH = Path("data/output/live_positions/positions.json")
-REFRESH_SECONDS = 1
+STATS_PATH = Path("data/output/live_positions/stats_1m.json")
+REFRESH_SECONDS = 0.5
 ALL_BALL_IDS = {4, 8, 10, 12}
 
 FIELD_X_MIN = -68000
@@ -26,6 +27,13 @@ def load_positions() -> dict[str, Any] | None:
     if not POSITIONS_PATH.exists(): return None
     try:
         with POSITIONS_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError: return None
+
+def load_stats() -> dict[str, Any] | None:
+    if not STATS_PATH.exists(): return None
+    try:
+        with STATS_PATH.open("r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError: return None
 
@@ -220,6 +228,40 @@ def main() -> None:
         speed = p.get('speed_kmh', 0)
         intensity = "🔴 Sprint" if speed > 24 else "🟡 High-Speed Run" if speed > 14 else "🟢 Low-Speed Run" if speed > 11 else "🚶 Trot" if speed > 1 else "🧍 Standing"
         st.sidebar.markdown(f"**{i+1}. {p['name']}** ({p['team']})  \n{speed:.1f} km/h - {intensity}")
+    
+    stats_data = load_stats()
+    st.sidebar.divider()
+    st.sidebar.subheader("🔥 Top Sprinters (Last 60s)")
+    
+    if stats_data and "stats" in stats_data:
+        stats_dict = stats_data["stats"]
+        sprint_leaderboard = []
+        
+        # Match our Spark stats (by sensor ID) back to the human players
+        for p in players_only:
+            total_sprint_dist = 0.0
+            for sid in p["sids"]:
+                sid_str = str(sid) # JSON keys are always strings
+                if sid_str in stats_dict and "Sprint" in stats_dict[sid_str]:
+                    # Add up the distance sprinted by this specific sensor
+                    total_sprint_dist += stats_dict[sid_str]["Sprint"].get("distance_1m", 0.0)
+            
+            if total_sprint_dist > 0:
+                sprint_leaderboard.append({
+                    "name": p["name"], 
+                    "team": p["team"], 
+                    "distance": total_sprint_dist
+                })
+        
+        # Sort by distance and display the top 5
+        sprint_leaderboard.sort(key=lambda x: x["distance"], reverse=True)
+        if sprint_leaderboard:
+            for i, leader in enumerate(sprint_leaderboard[:5]):
+                st.sidebar.markdown(f"**{i+1}. {leader['name']}** ({leader['team']})  \n**{leader['distance']:.1f} meters** sprinted")
+        else:
+            st.sidebar.write("No sprints detected in the last minute.")
+    else:
+        st.sidebar.write("Waiting for rolling stats data...")
 
     st.sidebar.divider()
 
