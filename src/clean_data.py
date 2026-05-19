@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when
+from pyspark.sql.functions import col, when, lit
 from pathlib import Path
 import shutil
 from src.config import (
@@ -10,8 +10,6 @@ from src.config import (
     FIRST_HALF_END_TS,
     SECOND_HALF_START_TS,
     SECOND_HALF_END_TS,
-    GAME_START_TS,
-    GAME_END_TS,
     TS_PER_SECOND,
 )
 
@@ -22,39 +20,46 @@ def clean_full_game() -> None:
         "csv").schema(RAW_SCHEMA).option(
         "header", False).load(RAW_FULL_GAME_PATH)
     
-    print(f"Raw rows: {df.count()}")
-
-    first_half_true = (
-        (col("ts") >= FIRST_HALF_START_TS) &
-        (col("ts") <= FIRST_HALF_END_TS)
-    )
-    second_half_true = (
-        (col("ts") >= SECOND_HALF_START_TS) &
-        (col("ts") <= SECOND_HALF_END_TS)
-    )
+    first_half_true = (col("ts") >= FIRST_HALF_START_TS) & (col("ts") <= FIRST_HALF_END_TS)
+    second_half_true = (col("ts") >= SECOND_HALF_START_TS) & (col("ts") <= SECOND_HALF_END_TS)
 
     cleaned_ts_df = df.where(
         first_half_true | second_half_true
     ).withColumn(
         "half", when(first_half_true, 1).otherwise(2)
     ).withColumn(
-        "matchSecond", ((col("ts") - GAME_START_TS) / TS_PER_SECOND).cast("int")
+        "matchSecond",
+        when(
+            col("half") == 1,
+            ((col("ts") - lit(FIRST_HALF_START_TS)) / lit(TS_PER_SECOND)).cast("double")
+        ).otherwise(
+            (lit(1800) + ((col("ts") - lit(SECOND_HALF_START_TS)) / lit(TS_PER_SECOND))).cast("double")
+        )
+    ).withColumn(
+        "x_m", col("x") / 1000.0
+    ).withColumn(
+        "y_m", col("y") / 1000.0
+    ).withColumn(
+        "z_m", col("z") / 1000.0
+    ).withColumn(
+        "speed_m_s", col("v_abs") * 1e-6       # Fixed: micrometers to meters
+    ).withColumn(
+        "speed_kmh", (col("v_abs") * 1e-6) * 3.6 # Fixed: micrometers to km/h
+    ).withColumn(
+        "acceleration_m_s2", col("a_abs") * 1e-6
     )
 
-
-    print(f"Cleaned ts rows: {cleaned_ts_df.count()}")
+    # --- DEBUG: PROVE THE MATH WORKS IN THE CONSOLE ---
+    print("\n--- SAMPLE OF CALCULATED SPEEDS (Proof they are running!) ---")
+    cleaned_ts_df.where(col("speed_kmh") > 5.0).select("sid", "v_abs", "speed_kmh").show(5)
+    print("-----------------------------------------------------------\n")
 
     output_path = Path(CLEAN_FULL_GAME_PATH)
-
     if output_path.exists():
         shutil.rmtree(output_path)
 
     cleaned_ts_df.write.mode("overwrite").option("header","true").csv(CLEAN_FULL_GAME_PATH)
-
-    # cleaned_ts_df.write.mode("overwrite").parquet(CLEAN_FULL_GAME_PATH) --> parquet is not human readable, but much faster for analysis : makes sense if queries take a lot of time
-
     spark_session.stop()
-
 
 if __name__ == "__main__":
     clean_full_game()

@@ -1,10 +1,13 @@
-from pathlib import Path
-import shutil
+import os
 import time
+import shutil
+from pathlib import Path
 
-from src.config import CHUNKED_FULL_GAME_PATH, REPLAY_SLEEP_SECONDS
+from src.config import CHUNKED_FULL_GAME_PATH
 
 STREAM_INPUT_PATH = Path("data/stream_input")
+# Slowed down to 0.5 to allow Spark to process smoothly without lagging
+REPLAY_SLEEP_SECONDS = 0.5
 
 
 def replay_full_game() -> None:
@@ -33,6 +36,14 @@ def replay_full_game() -> None:
     for chunk in chunks:
         target = STREAM_INPUT_PATH / chunk.name
         shutil.copytree(chunk, target)
+
+        # --- FIX: Overwrite the preserved modification times ---
+        # This forces Spark to process the files exactly in this chronological order.
+        now = time.time()
+        os.utime(target, (now, now))
+        for file in target.iterdir():
+            os.utime(file, (now, now))
+        # -------------------------------------------------------
 
         print(f"Replayed {chunk.name}")
         time.sleep(REPLAY_SLEEP_SECONDS)

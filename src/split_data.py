@@ -30,7 +30,7 @@ def split_clean_data_into_chunks() -> None:
     if output_path.exists():
         shutil.rmtree(output_path)
 
-    chunked_df.write.mode("overwrite").partitionBy("chunkId").option("header", "true").csv(CHUNKED_FULL_GAME_PATH)
+    chunked_df.write.mode("overwrite").partitionBy("chunkId").parquet(CHUNKED_FULL_GAME_PATH)
 
     spark_session.stop()
 

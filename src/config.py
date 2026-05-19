@@ -23,10 +23,10 @@ CHUNKED_FULL_GAME_PATH = "data/processed/full-game-chunked"
 
 
 
-FIELD_X_MIN = -52489
-FIELD_X_MAX = 52489
-FIELD_Y_MIN = -33965
-FIELD_Y_MAX = 33965
+FIELD_X_MIN = -68000
+FIELD_X_MAX = 68000
+FIELD_Y_MIN = -32500
+FIELD_Y_MAX = 32500
 
 BALL_IDS_BY_HALF = {
     1: {4, 8, 10},
@@ -133,7 +133,13 @@ RAW_SCHEMA = StructType([
 CLEAN_SCHEMA = StructType(
     RAW_SCHEMA.fields + [
         StructField("half", IntegerType(), True),
-        StructField("matchSecond", IntegerType(), True),
+        StructField("matchSecond", DoubleType(), True),
+        StructField("x_m", DoubleType(), True),
+        StructField("y_m", DoubleType(), True),
+        StructField("z_m", DoubleType(), True),
+        StructField("speed_m_s", DoubleType(), True),
+        StructField("speed_kmh", DoubleType(), True),
+        StructField("acceleration_m_s2", DoubleType(), True),
     ]
 )
 
