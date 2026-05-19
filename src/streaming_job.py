@@ -1,14 +1,17 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, window, count
+from pathlib import Path
 
-from src.config import CLEAN_SCHEMA
+from src.config import CLEAN_SCHEMA, STREAM_INPUT_PATH
 
-STREAM_INPUT_PATH = "data/stream_input"
 OUTPUT_PATH = "data/output/events_per_sensor"
 CHECKPOINT_PATH = "checkpoints/events_per_sensor"
 
 
 def run_streaming_job() -> None:
+
+    Path(STREAM_INPUT_PATH).mkdir(parents=True, exist_ok=True)
+
     spark = (
         SparkSession.builder
         .appName("Soccer Streaming Job")
