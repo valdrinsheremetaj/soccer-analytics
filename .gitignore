@@ -430,6 +430,7 @@ FodyWeavers.xsd
 
 /.vscode
 /data
+/checkpoints
 
 .DS_Store
 **/.DS_Store
