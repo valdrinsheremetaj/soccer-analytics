@@ -23,6 +23,7 @@ OUTPUT_FILE = Path("data/output/live_positions/positions.json")
 CHECKPOINT_PATH = Path("checkpoints/live_positions")
 
 def write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)

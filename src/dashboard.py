@@ -36,6 +36,46 @@ def load_stats() -> dict[str, Any] | None:
         with STATS_PATH.open("r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError: return None
+    
+def load_match_events() -> list[dict]:
+    events = []
+    base_dir = Path("data/metadata")
+    
+    def parse_time(t_str: str, half_offset: float) -> float:
+        if str(t_str) == '0': return 0.0 + half_offset
+        try:
+            h, m, s = str(t_str).split(':')
+            return int(h) * 3600 + int(m) * 60 + float(s) + half_offset
+        except: 
+            return -1
+
+    def read_event_file(folder: str, filename: str, half_offset: float, event_prefix: str, icon: str):
+        filepath = base_dir / folder / filename
+        if filepath.exists():
+            with open(filepath, "r", encoding="latin-1") as f:
+                for line in f:
+                    parts = line.strip().split(';')
+                    # Valid lines have at least 3 parts and start with an event ID (digits)
+                    if len(parts) >= 3 and parts[0].isdigit():
+                        event_name = parts[1]
+                        timestamp = parse_time(parts[2], half_offset)
+                        
+                        # Timestamp is -1 if parsing failed (e.g., hitting the summary stats at the bottom)
+                        if timestamp != -1: 
+                            events.append({
+                                "second": timestamp, 
+                                "msg": f"{icon} **{event_prefix}**: {event_name}"
+                            })
+
+    # Read Game Interruptions (1st half = 0s offset, 2nd half = 1800s offset)
+    read_event_file("Game Interruption", "1st Half.csv", 0, "Match Control", "🛑")
+    read_event_file("Game Interruption", "2nd Half.csv", 1800, "Match Control", "🛑")
+    
+    # Read Shots on Goal
+    read_event_file("Shot on Goal", "1st Half.csv", 0, "Shot by", "⚽")
+    read_event_file("Shot on Goal", "2nd Half.csv", 1800, "Shot by", "⚽")
+    
+    return sorted(events, key=lambda x: x["second"])
 
 def format_match_time(match_second: float | None) -> str:
     if match_second is None: return "-"
@@ -50,12 +90,13 @@ def get_current_half(positions: list[dict[str, Any]]) -> int | None:
     halves = [int(pos["half"]) for pos in positions if pos.get("half") is not None]
     return max(halves) if halves else None
 
-def average_positions(name: str, sensor_definition: dict[str, list[int]], positions_by_sid: dict[int, dict[str, Any]], object_type: str, team: str | None) -> dict[str, Any] | None:
+def average_positions(name: str, sensor_definition: dict[str, list[int]], positions_by_sid: dict[int, dict[str, Any]], object_type: str, team: str, role: str | None) -> dict[str, Any] | None:
     used_positions = [positions_by_sid[sid] for sid in sensor_definition["feet"] if sid in positions_by_sid]
     if not used_positions: used_positions = [positions_by_sid[sid] for sid in sensor_definition["extra"] if sid in positions_by_sid]
     if not used_positions: return None
     return {
         "name": name, "label": short_name(name), "type": object_type, "team": team,
+        "role": role,
         "x": sum(float(pos["x"]) for pos in used_positions) / len(used_positions),
         "y": sum(float(pos["y"]) for pos in used_positions) / len(used_positions),
         "ts": max(int(pos["ts"]) for pos in used_positions if pos.get("ts") is not None),
@@ -77,11 +118,13 @@ def build_display_objects(state: dict[str, Any]) -> list[dict[str, Any]]:
     positions_by_sid = {int(pos["sid"]): pos for pos in state.get("positions", []) if pos.get("sid") is not None}
     display_objects = get_ball_objects(positions_by_sid)
     for name, sd in TEAM_A_PLAYERS.items():
-        if p := average_positions(name, sd, positions_by_sid, "player", "Team A"): display_objects.append(p)
+        role = sd.get("role", "Player")
+        if p := average_positions(name, sd, positions_by_sid, "player", "Team A", role): display_objects.append(p)
     for name, sd in TEAM_B_PLAYERS.items():
-        if p := average_positions(name, sd, positions_by_sid, "player", "Team B"): display_objects.append(p)
+        role = sd.get("role", "Player")
+        if p := average_positions(name, sd, positions_by_sid, "player", "Team B", role): display_objects.append(p)
     for name, sd in REFEREE.items():
-        if p := average_positions(name, sd, positions_by_sid, "referee", None): display_objects.append(p)
+        if p := average_positions(name, sd, positions_by_sid, "referee", None, "Referee"): display_objects.append(p)
     return display_objects
 
 def add_pitch_lines(fig: go.Figure) -> None:
@@ -176,6 +219,9 @@ def create_field_figure(state: dict[str, Any], show_trails: bool = True, show_he
         ))
 
     add_pitch_lines(fig)
+    
+    TEAM_A_COLORS = {"Goalkeeper": "#00FFFF", "Defender": "#4169E1", "Midfielder": "#0000CD", "Forward": "#000080", "Player": "royalblue"}
+    TEAM_B_COLORS = {"Goalkeeper": "#FFD700", "Defender": "#FF6347", "Midfielder": "#DC143C", "Forward": "#8B0000", "Player": "tomato"}
 
     if show_trails:
         for i, b_id in enumerate(recent_batches[:-1]):
@@ -185,8 +231,14 @@ def create_field_figure(state: dict[str, Any], show_trails: bool = True, show_he
             add_object_trace(fig, [o for o in hist if o["team"] == "Team B"], "Team B", "tomato", 10, opacity=fade, is_trail=True)
             add_object_trace(fig, [o for o in hist if o["type"] == "ball"], "Ball", "yellow", 10, "circle", opacity=fade, is_trail=True)
 
-    add_object_trace(fig, [o for o in display_objects if o["team"] == "Team A"], "Team A", "royalblue", 17)
-    add_object_trace(fig, [o for o in display_objects if o["team"] == "Team B"], "Team B", "tomato", 17)
+    for role, color in TEAM_A_COLORS.items():
+        objs = [o for o in display_objects if o["team"] == "Team A" and o["role"] == role]
+        if objs: add_object_trace(fig, objs, f"Team A - {role}", color, 17)
+        
+    # Team B Traces
+    for role, color in TEAM_B_COLORS.items():
+        objs = [o for o in display_objects if o["team"] == "Team B" and o["role"] == role]
+        if objs: add_object_trace(fig, objs, f"Team B - {role}", color, 17)
     add_object_trace(fig, [o for o in display_objects if o["type"] == "ball"], "Ball", "yellow", 20)
     add_object_trace(fig, [o for o in display_objects if o["type"] == "referee"], "Referee", "black", 16, "square")
 
@@ -202,6 +254,10 @@ def create_field_figure(state: dict[str, Any], show_trails: bool = True, show_he
 def main() -> None:
     st.set_page_config(page_title="Live Soccer Positions", layout="wide")
     st.title("Live Soccer Tracking Demo")
+    
+    if "match_events" not in st.session_state:
+        st.session_state.match_events = load_match_events()
+        st.session_state.last_event_idx = 0
 
     if (state := load_positions()) is None:
         st.warning("No live position file found yet.")
@@ -265,15 +321,31 @@ def main() -> None:
 
     st.sidebar.divider()
 
-    cols = st.columns(5)
-    cols[0].metric("Visible objects", len(display_objects))
-    cols[1].metric("Raw sensors", len(raw_positions))
-    cols[2].metric("Match time", format_match_time(state.get("currentMatchSecond")))
-    cols[3].metric("Half", get_current_half(raw_positions) or "-")
-    cols[4].metric("Spark batch", state.get("batchId", "-"))
+    main_placeholder = st.empty()
+    current_time = state.get("currentMatchSecond")
 
-    fig = create_field_figure(state, show_trails=show_trails, show_heatmap=show_heatmap, heatmap_selection=heatmap_selection)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with main_placeholder.container():
+        cols = st.columns(5)
+        cols[0].metric("Visible objects", len(display_objects))
+        cols[1].metric("Raw sensors", len(raw_positions))
+        cols[2].metric("Match time", format_match_time(state.get("currentMatchSecond")))
+        cols[3].metric("Half", get_current_half(raw_positions) or "-")
+        cols[4].metric("Spark batch", state.get("batchId", "-"))
+        
+        if current_time is not None:
+            idx = st.session_state.last_event_idx
+            while idx < len(st.session_state.match_events):
+                event = st.session_state.match_events[idx]
+                # If the dashboard clock passes the event time, show it!
+                if current_time >= event["second"]:
+                    st.toast(f"**Live Event:** {event['msg']}", icon="🏟️")
+                    idx += 1
+                else:
+                    break # Future events, stop checking
+            st.session_state.last_event_idx = idx
+
+        fig = create_field_figure(state, show_trails=show_trails, show_heatmap=show_heatmap, heatmap_selection=heatmap_selection)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     time.sleep(REFRESH_SECONDS)
     st.rerun()

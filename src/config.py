@@ -38,34 +38,42 @@ TEAM_A_PLAYERS = {
     "Nick Gertje": {
         "feet": [13, 14],
         "extra": [97, 98],
+        "role": "Goalkeeper"
     },
     "Dennis Dotterweich": {
         "feet": [47, 16],
         "extra": [],
+        "role": "Defender"
     },
     "Niklas Waelzlein": {
         "feet": [49, 88],
         "extra": [],
+        "role": "Defender"
     },
     "Wili Sommer": {
         "feet": [19, 52],
         "extra": [],
+        "role": "Defender"
     },
     "Philipp Harlass": {
         "feet": [53, 54],
         "extra": [],
+        "role": "Defender"
     },
     "Roman Hartleb": {
         "feet": [23, 24],
         "extra": [],
+        "role": "Midfielder"
     },
     "Erik Engelhardt": {
         "feet": [57, 58],
         "extra": [],
+        "role": "Forward"
     },
     "Sandro Schneider": {
         "feet": [59, 28],
         "extra": [],
+        "role": "Forward"
     },
 }
 
@@ -74,34 +82,42 @@ TEAM_B_PLAYERS = {
     "Leon Krapf": {
         "feet": [61, 62],
         "extra": [99, 100],
+        "role": "Goalkeeper",
     },
     "Kevin Baer": {
         "feet": [63, 64],
         "extra": [],
+        "role": "Midfielder",
     },
     "Luca Ziegler": {
         "feet": [65, 66],
         "extra": [],
+        "role": "Defender"
     },
     "Ben Mueller": {
         "feet": [67, 68],
         "extra": [],
+        "role": "Midfielder"
     },
     "Vale Reitstetter": {
         "feet": [69, 38],
         "extra": [],
+        "role": "Midfielder"
     },
     "Christopher Lee": {
         "feet": [71, 40],
         "extra": [],
+        "role": "Defender"
     },
     "Leon Heinze": {
         "feet": [73, 74],
         "extra": [],
+        "role": "Forward"
     },
     "Leo Langhans": {
         "feet": [75, 44],
         "extra": [],
+        "role": "Forward"
     },
 }
 
