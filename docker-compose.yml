@@ -8,5 +8,5 @@ services:
     stdin_open: true
     tty: true
     ports:
-      - "8501:8501" # Maps host port 8501 to container port 8501
+      - "8501:8501" 
     

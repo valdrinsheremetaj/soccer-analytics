@@ -13,10 +13,12 @@ logic are handled by the separate pipeline scripts.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
-import time
 import math
+import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +47,12 @@ PossessionData = dict[str, list[PossessionInterval]]
 POSITIONS_PATH = Path("data/output/live_positions/positions.json")
 STATS_PATH = Path("data/output/live_positions/stats_1m.json")
 METADATA_PATH = Path("data/metadata")
-POSSESSION_PATH = METADATA_PATH / "Ball Possession"
+RAW_REFEREE_EVENTS_PATH = Path("data/raw/referee-events")
+
+POSSESSION_PATHS = [
+    METADATA_PATH / "Ball Possession",
+    RAW_REFEREE_EVENTS_PATH / "Ball Possession",
+]
 
 ALL_BALL_IDS = {4, 8, 10, 12}
 
@@ -159,6 +166,45 @@ def parse_event_time(time_text: str, half_offset: float) -> float | None:
     except ValueError:
         return None
 
+def read_possession_rows(file_path: Path) -> list[list[str]]:
+    """Reads semicolon-separated possession metadata rows."""
+    rows: list[list[str]] = []
+
+    with file_path.open("r", encoding="latin-1", newline="") as possession_file:
+        reader = csv.reader(possession_file, delimiter=";")
+
+        for row in reader:
+            cleaned_row = [value.strip() for value in row if value.strip()]
+            if cleaned_row:
+                rows.append(cleaned_row)
+
+    return rows
+
+def extract_times_from_row(row: list[str]) -> list[float]:
+    """Extracts parseable timestamps from one metadata row."""
+    candidate_fields = row[2:] if len(row) >= 3 and row[0].isdigit() else row
+    time_values: list[float] = []
+
+    for value in candidate_fields:
+        if ":" not in value and value != "0":
+            continue
+
+        parsed_time = parse_possession_time(value)
+        if parsed_time is not None:
+            time_values.append(parsed_time)
+
+    return time_values
+
+def extract_times_from_files(file_paths: list[Path]) -> list[float]:
+    """Extracts all timestamps from multiple files."""
+    times: list[float] = []
+
+    for file_path in file_paths:
+        for row in read_possession_rows(file_path):
+            times.extend(extract_times_from_row(row))
+
+    return times
+
 
 def read_match_event_file(
     folder: str,
@@ -236,12 +282,77 @@ def load_match_events() -> list[JsonDict]:
 
 
 def parse_possession_time(time_text: str) -> float | None:
-    """Parses a possession metadata timestamp without applying a half offset."""
+    """Parses possession timestamps from metadata files."""
+    text = str(time_text).strip().replace(",", ".")
+
+    if not text:
+        return None
+
+    if text == "0":
+        return 0.0
+
     try:
-        hours, minutes, seconds = str(time_text).split(":")
-        return int(hours) * 3_600 + int(minutes) * 60 + float(seconds)
+        parts = text.split(":")
+
+        if len(parts) == 3:
+            hours, minutes, seconds = parts
+            return int(hours) * 3_600 + int(minutes) * 60 + float(seconds)
+
+        if len(parts) == 2:
+            minutes, seconds = parts
+            return int(minutes) * 60 + float(seconds)
+
     except ValueError:
         return None
+
+    return None
+
+def infer_second_half_offset(second_half_files: list[Path]) -> float:
+    """Infers whether second-half files are relative or already absolute."""
+    times = extract_times_from_files(second_half_files)
+
+    if not times:
+        return SECOND_HALF_OFFSET_SECONDS
+
+    earliest_time = min(times)
+
+    if earliest_time >= SECOND_HALF_OFFSET_SECONDS - 60.0:
+        return 0.0
+
+    return SECOND_HALF_OFFSET_SECONDS
+
+
+def is_begin_event(event_text: str) -> bool:
+    """Returns True if a row starts a possession interval."""
+    text = event_text.casefold()
+    return "begin" in text or "start" in text
+
+
+def is_end_event(event_text: str) -> bool:
+    """Returns True if a row ends a possession interval."""
+    text = event_text.casefold()
+    return "end" in text or "stop" in text
+
+
+def add_possession_interval(
+    possession_data: PossessionData,
+    player_name: str,
+    start_time: float,
+    end_time: float,
+) -> None:
+    """Adds one valid possession interval."""
+    if end_time <= start_time:
+        LOGGER.warning(
+            "Skipping invalid possession interval for %s: %.3f -> %.3f",
+            player_name,
+            start_time,
+            end_time,
+        )
+        return
+
+    possession_data.setdefault(player_name, []).append(
+        {"start": start_time, "end": end_time}
+    )
 
 
 def process_possession_file(
@@ -249,72 +360,148 @@ def process_possession_file(
     possession_data: PossessionData,
     half_offset: float = 0.0,
 ) -> None:
-    """Adds possession intervals from one player metadata file.
-
-    Args:
-        file_path: Player possession CSV file.
-        possession_data: Mutable possession dictionary to update.
-        half_offset: Offset for files that are already separated by half.
-    """
-    player_name = file_path.stem
-    possession_data.setdefault(player_name, [])
+    """Adds possession intervals from one player metadata file."""
+    player_name = resolve_player_name(file_path.stem)
 
     current_begin: float | None = None
     current_offset = half_offset
-    last_time = -1.0
+    last_raw_time = -1.0
 
-    with file_path.open("r", encoding="latin-1") as possession_file:
-        for line in possession_file:
-            parts = line.strip().split(";")
-            if len(parts) < 3 or not parts[0].isdigit():
-                continue
+    for row in read_possession_rows(file_path):
+        if len(row) < 3:
+            continue
 
-            event_name = parts[1]
-            raw_time = parse_possession_time(parts[2])
-            if raw_time is None:
-                continue
+        event_text = row[1] if row[0].isdigit() else " ".join(row)
+        time_values = extract_times_from_row(row)
 
-            # Some metadata variants store both halves in one file. In that
-            # case, a backward jump in the timestamp indicates the second half.
-            if raw_time < last_time and current_offset == 0.0:
-                current_offset = SECOND_HALF_OFFSET_SECONDS
+        if not time_values:
+            continue
 
-            last_time = raw_time
-            event_time = raw_time + current_offset
+        raw_time = time_values[0]
 
-            if "Begin" in event_name:
-                current_begin = event_time
-            elif "End" in event_name and current_begin is not None:
-                possession_data[player_name].append(
-                    {"start": current_begin, "end": event_time}
+        # Handles single files where the second half starts again at 00:00.
+        if raw_time < last_raw_time and half_offset == 0.0:
+            current_offset = SECOND_HALF_OFFSET_SECONDS
+
+        last_raw_time = raw_time
+        event_time = raw_time + current_offset
+
+        if is_begin_event(event_text):
+            current_begin = event_time
+            continue
+
+        if is_end_event(event_text):
+            if current_begin is not None:
+                add_possession_interval(
+                    possession_data,
+                    player_name,
+                    current_begin,
+                    event_time,
                 )
                 current_begin = None
+            continue
+
+        # Fallback for interval-style rows: id;event;start;end
+        if len(time_values) >= 2:
+            add_possession_interval(
+                possession_data,
+                player_name,
+                time_values[0] + current_offset,
+                time_values[1] + current_offset,
+            )
+
+    if current_begin is not None:
+        LOGGER.warning(
+            "Unclosed possession interval in %s starting at %.3f",
+            file_path,
+            current_begin,
+        )
+
+
+def merge_possession_intervals(possession_data: PossessionData) -> PossessionData:
+    """Sorts and merges overlapping intervals per player."""
+    merged_data: PossessionData = {}
+
+    for player_name, intervals in possession_data.items():
+        sorted_intervals = sorted(
+            [
+                interval
+                for interval in intervals
+                if interval["end"] > interval["start"]
+            ],
+            key=lambda interval: interval["start"],
+        )
+
+        merged_intervals: list[PossessionInterval] = []
+
+        for interval in sorted_intervals:
+            if not merged_intervals:
+                merged_intervals.append(interval)
+                continue
+
+            previous = merged_intervals[-1]
+
+            if interval["start"] <= previous["end"]:
+                previous["end"] = max(previous["end"], interval["end"])
+            else:
+                merged_intervals.append(interval)
+
+        merged_data[player_name] = merged_intervals
+
+    return merged_data
 
 
 def load_possession_data() -> PossessionData:
     """Loads all player ball-possession intervals."""
-    if not POSSESSION_PATH.exists():
+    possession_path = find_possession_path()
+
+    if possession_path is None:
+        LOGGER.warning("No possession metadata path found.")
         return {}
 
     possession_data: PossessionData = {}
-    first_half_dir = POSSESSION_PATH / "1st Half"
-    second_half_dir = POSSESSION_PATH / "2nd Half"
 
-    if first_half_dir.exists():
-        for file_path in first_half_dir.glob("*.csv"):
+    first_half_dir = possession_path / "1st Half"
+    second_half_dir = possession_path / "2nd Half"
+
+    if first_half_dir.exists() or second_half_dir.exists():
+        first_half_files = (
+            sorted(first_half_dir.glob("*.csv")) if first_half_dir.exists() else []
+        )
+        second_half_files = (
+            sorted(second_half_dir.glob("*.csv")) if second_half_dir.exists() else []
+        )
+
+        for file_path in first_half_files:
             process_possession_file(file_path, possession_data, 0.0)
-        for file_path in second_half_dir.glob("*.csv"):
+
+        second_half_offset = infer_second_half_offset(second_half_files)
+        LOGGER.info(
+            "Using %.1f seconds as second-half possession offset.",
+            second_half_offset,
+        )
+
+        for file_path in second_half_files:
             process_possession_file(
                 file_path,
                 possession_data,
-                SECOND_HALF_OFFSET_SECONDS,
+                second_half_offset,
             )
     else:
-        for file_path in POSSESSION_PATH.glob("*.csv"):
+        for file_path in sorted(possession_path.glob("*.csv")):
             process_possession_file(file_path, possession_data, 0.0)
 
-    return possession_data
+    possession_data = merge_possession_intervals(possession_data)
 
+    interval_count = sum(len(intervals) for intervals in possession_data.values())
+    LOGGER.info(
+        "Loaded %d possession intervals for %d players from %s.",
+        interval_count,
+        len(possession_data),
+        possession_path,
+    )
+
+    return possession_data
 
 def format_match_time(match_second: float | None) -> str:
     """Formats a match timestamp as ``MM:SS``."""
@@ -336,6 +523,13 @@ def get_current_half(positions: list[Position]) -> int | None:
     halves = [int(pos["half"]) for pos in positions if pos.get("half") is not None]
     return max(halves) if halves else None
 
+def find_possession_path() -> Path | None:
+    """Returns the first existing possession metadata path."""
+    for path in POSSESSION_PATHS:
+        if path.exists():
+            return path
+
+    return None
 
 def average_positions(
     name: str,
@@ -974,6 +1168,30 @@ def render_sprint_leaderboard(
             f"**{leader['distance']:.1f} meters** sprinted"
         )
 
+def get_player_name_variants(player_name: str) -> set[str]:
+    """Returns robust variants for matching player names."""
+    raw_name = " ".join(player_name.strip().split()).casefold()
+
+    german_name = (
+        raw_name.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+
+    ascii_name = unicodedata.normalize("NFKD", raw_name)
+    ascii_name = "".join(
+        char for char in ascii_name if not unicodedata.combining(char)
+    )
+
+    ascii_german_name = unicodedata.normalize("NFKD", german_name)
+    ascii_german_name = "".join(
+        char for char in ascii_german_name
+        if not unicodedata.combining(char)
+    )
+
+    return {raw_name, german_name, ascii_name, ascii_german_name}
+
 
 def get_player_team(player_name: str) -> str:
     """Returns the team name for a player, or an empty string if unknown."""
@@ -1006,18 +1224,7 @@ def calculate_possession_state(
     possession_data: PossessionData,
     window_seconds: float | None = None,
 ) -> tuple[list[str], dict[str, float], dict[str, float]]:
-    """Calculates current, player, and team possession.
-
-    Args:
-        current_time: Current match time in seconds.
-        possession_data: Metadata possession intervals by player.
-        window_seconds: Optional rolling window size. If ``None``, possession is
-            calculated from the beginning of the match.
-
-    Returns:
-        Tuple containing current possessors, player possession durations, and
-        team possession durations.
-    """
+    """Calculates current, player, and team possession from metadata."""
     current_possessors: list[str] = []
     player_possession: dict[str, float] = {}
     team_possession = get_team_possession_template()
@@ -1033,34 +1240,73 @@ def calculate_possession_state(
     )
     active_duration = max(0.0, window_end - window_start)
 
-    for player, intervals in possession_data.items():
-        player_total = 0.0
+    clipped_intervals: list[tuple[str, float, float, float]] = []
+    current_candidates: list[tuple[str, float]] = []
 
+    for player_name, intervals in possession_data.items():
         for interval in intervals:
             start = interval["start"]
             end = interval["end"]
 
-            if start <= current_time <= end:
-                current_possessors.append(player)
+            # Half-open interval prevents double possession at boundaries.
+            if start <= current_time < end:
+                current_candidates.append((player_name, start))
 
-            player_total += calculate_interval_overlap(
-                start,
-                end,
-                window_start,
-                window_end,
-            )
+            overlap_start = max(start, window_start)
+            overlap_end = min(end, window_end)
 
-        if player_total <= 0:
+            if overlap_end > overlap_start:
+                clipped_intervals.append(
+                    (player_name, overlap_start, overlap_end, start)
+                )
+
+    if current_candidates:
+        latest_start = max(start for _, start in current_candidates)
+        current_possessors = [
+            player
+            for player, start in current_candidates
+            if start == latest_start
+        ]
+
+    boundaries = {window_start, window_end}
+
+    for _, start, end, _ in clipped_intervals:
+        boundaries.add(start)
+        boundaries.add(end)
+
+    sorted_boundaries = sorted(boundaries)
+
+    for left, right in zip(sorted_boundaries, sorted_boundaries[1:], strict=False):
+        if right <= left:
             continue
 
-        player_possession[player] = player_total
-        player_team = get_player_team(player)
+        probe_time = (left + right) / 2.0
+        active_players = [
+            (player_name, original_start)
+            for player_name, start, end, original_start in clipped_intervals
+            if start <= probe_time < end
+        ]
+
+        if not active_players:
+            continue
+
+        # If metadata overlaps, the interval that started last wins.
+        player_name = max(active_players, key=lambda item: item[1])[0]
+        player_possession[player_name] = (
+            player_possession.get(player_name, 0.0) + right - left
+        )
+
+    for player_name, possession_seconds in player_possession.items():
+        player_team = get_player_team(player_name)
 
         if player_team in team_possession:
-            team_possession[player_team] += player_total
+            team_possession[player_team] += possession_seconds
 
     known_possession_time = team_possession[TEAM_A] + team_possession[TEAM_B]
-    team_possession[LOOSE_BALL] = max(0.0, active_duration - known_possession_time)
+    team_possession[LOOSE_BALL] = max(
+        0.0,
+        active_duration - known_possession_time,
+    )
 
     return current_possessors, player_possession, team_possession
 
@@ -1074,6 +1320,20 @@ def calculate_object_distance(
         float(first_object["x"]) - float(second_object["x"]),
         float(first_object["y"]) - float(second_object["y"]),
     )
+
+def resolve_player_name(raw_player_name: str) -> str:
+    """Maps a metadata filename to the player name used in config.py."""
+    player_lookup: dict[str, str] = {}
+
+    for player_name in list(TEAM_A_PLAYERS) + list(TEAM_B_PLAYERS):
+        for variant in get_player_name_variants(player_name):
+            player_lookup[variant] = player_name
+
+    for variant in get_player_name_variants(raw_player_name):
+        if variant in player_lookup:
+            return player_lookup[variant]
+
+    return " ".join(raw_player_name.strip().split())
 
 
 def get_latest_ball(display_objects: list[DisplayObject]) -> DisplayObject | None:
@@ -1284,7 +1544,7 @@ def render_time_on_ball(cumulative_possession: dict[str, float]) -> None:
 
 def render_possession_sidebar(
     current_time: float | None,
-    possession_data: st.session_state.possession_data,
+    possession_data: PossessionData,
     display_objects: list[DisplayObject],
 ) -> None:
     """Renders all possession-related sidebar elements."""
@@ -1338,6 +1598,10 @@ def render_sidebar(
         build_heatmap_options(),
         disabled=not show_heatmap,
     )
+    
+    if st.sidebar.button("Reload possession metadata"):
+        st.session_state.possession_data = load_possession_data()
+        st.sidebar.success("Possession metadata reloaded.")
 
     return show_trails, show_heatmap, heatmap_selection
 
