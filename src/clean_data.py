@@ -42,17 +42,12 @@ def clean_full_game() -> None:
     ).withColumn(
         "z_m", col("z") / 1000.0
     ).withColumn(
-        "speed_m_s", col("v_abs") * 1e-6       # Fixed: micrometers to meters
+        "speed_m_s", col("v_abs") * 1e-6      
     ).withColumn(
-        "speed_kmh", (col("v_abs") * 1e-6) * 3.6 # Fixed: micrometers to km/h
+        "speed_kmh", (col("v_abs") * 1e-6) * 3.6 
     ).withColumn(
         "acceleration_m_s2", col("a_abs") * 1e-6
     )
-
-    # --- DEBUG: PROVE THE MATH WORKS IN THE CONSOLE ---
-    print("\n--- SAMPLE OF CALCULATED SPEEDS (Proof they are running!) ---")
-    cleaned_ts_df.where(col("speed_kmh") > 5.0).select("sid", "v_abs", "speed_kmh").show(5)
-    print("-----------------------------------------------------------\n")
 
     output_path = Path(CLEAN_FULL_GAME_PATH)
     if output_path.exists():

@@ -17,11 +17,6 @@ ALL_BALL_IDS = {4, 8, 10, 12}
 
 REFRESH_SECONDS = 0.15
 
-FIELD_X_MIN = -68000
-FIELD_X_MAX = 68000
-FIELD_Y_MIN = -32500
-FIELD_Y_MAX = 32500
-
 HEATMAP_OFFSET_X = 0
 HEATMAP_OFFSET_Y = -29000
   
@@ -426,7 +421,7 @@ def main() -> None:
         )
         pie_fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         pie_fig.update_traces(textposition='inside', textinfo='percent+label')
-        st.sidebar.plotly_chart(pie_fig, use_container_width=True)
+        st.sidebar.plotly_chart(pie_fig, width='stretch')
     else:
         st.sidebar.write("Waiting for first possession...")
 
@@ -464,7 +459,7 @@ def main() -> None:
             st.session_state.last_event_idx = idx
 
         fig = create_field_figure(state, show_trails=show_trails, show_heatmap=show_heatmap, heatmap_selection=heatmap_selection)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width='stretch', config={"displayModeBar": False})
 
     time.sleep(REFRESH_SECONDS)
     st.rerun()

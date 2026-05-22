@@ -113,6 +113,12 @@ def main() -> None:
         )
         processes.append(dashboard)
 
+        statistics = start_process(
+            "Statistics dashboard",
+            [sys.executable, "-m", "streamlit", "run", "src/statistics_dashboard.py"]
+        )
+        processes.append(statistics)
+
         print("\nEverything is running.")
         print("Open the Streamlit URL shown above.")
         print("Press CTRL+C here to stop all processes.")
