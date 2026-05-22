@@ -1335,7 +1335,7 @@ def render_sidebar(
     st.sidebar.divider()
     render_fastest_players(display_objects)
     render_sprint_leaderboard(stats_data, display_objects)
-    render_possession_sidebar(current_time, st.session_state.possession_data)
+    render_possession_sidebar(current_time, st.session_state.possession_data, display_objects)
 
     return show_trails, show_heatmap, heatmap_selection
 
