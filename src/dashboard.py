@@ -9,12 +9,13 @@ import plotly.graph_objects as go
 import streamlit as st
 import plotly.express as px
 
-from src.config import FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX, BALL_IDS_BY_HALF, TEAM_A_PLAYERS, TEAM_B_PLAYERS, REFEREE
+from src.config import FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX, BALL_IDS_BY_HALF, TEAM_A_PLAYERS, TEAM_B_PLAYERS, REFEREE, REPLAY_SLEEP_SECONDS
 
 POSITIONS_PATH = Path("data/output/live_positions/positions.json")
 STATS_PATH = Path("data/output/live_positions/stats_1m.json")
-REFRESH_SECONDS = 0.5
 ALL_BALL_IDS = {4, 8, 10, 12}
+
+REFRESH_SECONDS = 0.15
 
 FIELD_X_MIN = -68000
 FIELD_X_MAX = 68000
@@ -314,11 +315,13 @@ def main() -> None:
     if "possession_data" not in st.session_state:
         st.session_state.possession_data = load_possession_data()
 
-    if (state := load_positions()) is None:
+    if (real_state := load_positions()) is None:
         st.warning("No live position file found yet.")
         time.sleep(REFRESH_SECONDS)
         st.rerun()
         return
+
+    state = real_state
 
     raw_positions = state.get("positions", [])
     display_objects = build_display_objects(state)

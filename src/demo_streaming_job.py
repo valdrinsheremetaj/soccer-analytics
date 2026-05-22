@@ -6,6 +6,8 @@ import shutil
 import time
 from pathlib import Path
 
+from src.config import BALL_SENSOR_IDS
+
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql.functions import col, row_number
 import pyspark.sql.functions as F
@@ -15,7 +17,7 @@ STATS_FILE = Path("data/output/live_positions/stats_1m.json")
 STATS_CHECKPOINT = Path("checkpoints/stats_1m")
 
 from src.config import CLEAN_SCHEMA, FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX
-# --- NEW: Import the Heatmap Engine ---
+
 from src.heatmap_analysis import HeatmapAnalyzer
 
 STREAM_INPUT_PATH = Path("data/stream_input")
@@ -62,7 +64,10 @@ def main() -> None:
     # QUERY 1: RUNNING ANALYSIS (1-Minute Window)
     # -------------------------------------------------------------
     # 1. Enrich with Timestamp, Intensity, and incremental distance
-    enriched_stream = valid_positions.withColumn(
+
+    player_positions = valid_positions.where(~F.col("sid").isin(BALL_SENSOR_IDS))
+
+    enriched_stream = player_positions.withColumn(
         "event_time", F.expr("timestamp_seconds(matchSecond)")
     ).withColumn(
         "intensity",
@@ -72,9 +77,11 @@ def main() -> None:
          .when(F.col("speed_kmh") > 1, "Trot")
          .otherwise("Standing")
     ).withColumn(
-        # Distance = Speed (m/s) * Time Interval. 
-        # Assuming sensor freq is ~10Hz (0.1 seconds per row). Adjust as needed!
-        "distance_covered", (F.col("speed_kmh") / 3.6) * 0.005
+        "dt_seconds",
+        F.when(F.col("sid").isin(BALL_SENSOR_IDS), F.lit(0.0005)).otherwise(F.lit(0.005))
+    ).withColumn(
+        "distance_covered", (F.col("speed_kmh") / 3.6) * F.col("dt_seconds")
+
     ).withWatermark("event_time", "5 seconds")
 
     # 2. Window Aggregation (Group by SID, Intensity, and Time Window)
@@ -141,9 +148,11 @@ def main() -> None:
                 latest_stats[sid] = {}
                 
             # Overwrite the latest totals for this sid and intensity class
+            dt = 0.0005 if sid in BALL_SENSOR_IDS else 0.005
+
             latest_stats[sid][intensity] = {
                 "distance_1m": float(row["distance_1m"]),
-                "time_1m": int(row["ping_count"]) * 0.005 # Seconds spent
+                "time_1m": int(row["ping_count"]) * dt
             }
             
         write_json_atomic(STATS_FILE, {"batchId": int(batch_id), "stats": latest_stats})
@@ -153,7 +162,7 @@ def main() -> None:
         .foreachBatch(process_stats_batch) \
         .outputMode("update") \
         .option("checkpointLocation", str(STATS_CHECKPOINT)) \
-        .trigger(processingTime="2 seconds") \
+        .trigger(processingTime="1 second") \
         .start()
         
     query = valid_positions.writeStream.foreachBatch(process_batch).outputMode("append").option("checkpointLocation", CHECKPOINT_PATH).trigger(processingTime="1 second").start()

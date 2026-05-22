@@ -28,6 +28,8 @@ FIELD_X_MAX = 68000
 FIELD_Y_MIN = -32500
 FIELD_Y_MAX = 32500
 
+BALL_SENSOR_IDS = [4, 8, 10, 12]
+
 BALL_IDS_BY_HALF = {
     1: {4, 8, 10},
     2: {4, 8, 10, 12},
