@@ -74,13 +74,7 @@ def select_active_ball(
     If the current half is known, the ball ids configured for that half are
     preferred. Otherwise the newest visible ball is used.
     """
-    balls = [
-    obj
-    for obj in display_objects
-    if obj["type"] == "ball"
-    and FIELD_X_MIN <= float(obj["x"]) <= FIELD_X_MAX
-    and FIELD_Y_MIN <= float(obj["y"]) <= FIELD_Y_MAX
-    ]
+    balls = [obj for obj in display_objects if obj["type"] == "ball"]
 
     if not balls:
         return None
@@ -616,13 +610,7 @@ def render_statistics_tab(
     current_time = state.get("currentMatchSecond")
 
     players = [obj for obj in display_objects if obj.get("type") == "player"]
-    balls = [
-    obj
-    for obj in display_objects
-    if obj["type"] == "ball"
-    and FIELD_X_MIN <= float(obj["x"]) <= FIELD_X_MAX
-    and FIELD_Y_MIN <= float(obj["y"]) <= FIELD_Y_MAX
-    ]
+    balls = [obj for obj in display_objects if obj.get("type") == "ball"]
     ball = select_active_ball(display_objects, raw_positions)
 
     live_possession = compute_live_possession(players, ball)
