@@ -7,6 +7,7 @@ from typing import Any
 
 import plotly.graph_objects as go
 import streamlit as st
+import plotly.express as px
 
 from src.config import FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX, BALL_IDS_BY_HALF, TEAM_A_PLAYERS, TEAM_B_PLAYERS, REFEREE
 
@@ -76,6 +77,57 @@ def load_match_events() -> list[dict]:
     read_event_file("Shot on Goal", "2nd Half.csv", 1800, "Shot by", "⚽")
     
     return sorted(events, key=lambda x: x["second"])
+
+def load_possession_data() -> dict[str, list[dict]]:
+    possession_data = {}
+    base_dir = Path("data/metadata/Ball Possession")
+    
+    def parse_time(t_str: str) -> float:
+        try:
+            h, m, s = str(t_str).split(':')
+            return int(h) * 3600 + int(m) * 60 + float(s)
+        except: return -1
+
+    if not base_dir.exists(): return {}
+    
+    def process_file(filepath: Path, half_offset: float = 0.0):
+        player_name = filepath.stem # Filename without .csv
+        if player_name not in possession_data:
+            possession_data[player_name] = []
+            
+        current_begin = None
+        last_time = -1
+        current_offset = half_offset
+        
+        with open(filepath, "r", encoding="latin-1") as f:
+            for line in f:
+                parts = line.strip().split(';')
+                if len(parts) >= 3 and parts[0].isdigit():
+                    event_name = parts[1]
+                    raw_time = parse_time(parts[2])
+                    if raw_time == -1: continue
+                    
+                    # Auto-detect 2nd half if time suddenly jumps backwards!
+                    if raw_time < last_time and current_offset == 0.0:
+                        current_offset = 1800.0 
+                    last_time = raw_time
+                    
+                    timestamp = raw_time + current_offset
+                    
+                    if "Begin" in event_name:
+                        current_begin = timestamp
+                    elif "End" in event_name and current_begin is not None:
+                        possession_data[player_name].append({"start": current_begin, "end": timestamp})
+                        current_begin = None
+
+    # Process files intelligently based on folder structure
+    if (base_dir / "1st Half").exists():
+        for f in (base_dir / "1st Half").glob("*.csv"): process_file(f, 0)
+        for f in (base_dir / "2nd Half").glob("*.csv"): process_file(f, 1800)
+    else:
+        for f in base_dir.glob("*.csv"): process_file(f, 0)
+        
+    return possession_data
 
 def format_match_time(match_second: float | None) -> str:
     if match_second is None: return "-"
@@ -258,6 +310,9 @@ def main() -> None:
     if "match_events" not in st.session_state:
         st.session_state.match_events = load_match_events()
         st.session_state.last_event_idx = 0
+    
+    if "possession_data" not in st.session_state:
+        st.session_state.possession_data = load_possession_data()
 
     if (state := load_positions()) is None:
         st.warning("No live position file found yet.")
@@ -320,6 +375,67 @@ def main() -> None:
         st.sidebar.write("Waiting for rolling stats data...")
 
     st.sidebar.divider()
+    
+    current_time = state.get("currentMatchSecond")
+    current_possessor = None
+    cumulative_possession = {} 
+    team_possession = {"Team A": 0.0, "Team B": 0.0}
+    
+    if current_time is not None:
+        for player, intervals in st.session_state.possession_data.items():
+            player_total = 0.0
+            for interval in intervals:
+                start, end = interval["start"], interval["end"]
+                
+                # 1. Is this player currently controlling the ball?
+                if start <= current_time <= end:
+                    current_possessor = player
+                    
+                # 2. Accumulate possession time UP TO the current match second
+                if start < current_time:
+                    actual_end = min(end, current_time)
+                    player_total += (actual_end - start)
+            
+            if player_total > 0:
+                cumulative_possession[player] = player_total
+                if player in TEAM_A_PLAYERS: team_possession["Team A"] += player_total
+                elif player in TEAM_B_PLAYERS: team_possession["Team B"] += player_total
+
+    st.sidebar.divider()
+    
+    # UI 1: The "Currently in Possession" Alert
+    if current_possessor:
+        team = "Team A" if current_possessor in TEAM_A_PLAYERS else "Team B" if current_possessor in TEAM_B_PLAYERS else ""
+        st.sidebar.success(f"⚽ **In Possession:** {current_possessor} ({team})")
+    else:
+        st.sidebar.info("⚽ **In Possession:** None (Loose Ball)")
+
+    # UI 2: Live Team Possession % Pie Chart
+    st.sidebar.subheader("📊 Team Possession %")
+    total_time = team_possession["Team A"] + team_possession["Team B"]
+    if total_time > 0:
+        pie_fig = px.pie(
+            values=[team_possession["Team A"], team_possession["Team B"]], 
+            names=["Team A", "Team B"],
+            color=["Team A", "Team B"],
+            color_discrete_map={"Team A": "royalblue", "Team B": "tomato"},
+            height=200
+        )
+        pie_fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        pie_fig.update_traces(textposition='inside', textinfo='percent+label')
+        st.sidebar.plotly_chart(pie_fig, use_container_width=True)
+    else:
+        st.sidebar.write("Waiting for first possession...")
+
+    # UI 3: Time on Ball Leaderboard
+    st.sidebar.subheader("⏱️ Time on Ball")
+    sorted_possession = sorted(cumulative_possession.items(), key=lambda x: x[1], reverse=True)
+    if sorted_possession:
+        for i, (player, time_sec) in enumerate(sorted_possession[:5]):
+            team = "Team A" if player in TEAM_A_PLAYERS else "Team B" if player in TEAM_B_PLAYERS else ""
+            st.sidebar.markdown(f"**{i+1}. {player}** ({team})  \n{time_sec:.1f} seconds")
+    else:
+        st.sidebar.write("No possessions yet.")
 
     main_placeholder = st.empty()
     current_time = state.get("currentMatchSecond")
