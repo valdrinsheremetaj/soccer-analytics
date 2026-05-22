@@ -1323,11 +1323,9 @@ def render_sidebar(
     stats_data: JsonDict | None,
     current_time: float | None,
 ) -> tuple[bool, bool, str]:
-    """Renders sidebar controls and statistics.
+    """Renders only display controls in the sidebar.
 
-    Returns:
-        Tuple containing ``show_trails``, ``show_heatmap``, and selected heat-map
-        focus.
+    The analysis elements are rendered in the separate Analysis tab.
     """
     st.sidebar.title("Display Controls")
 
@@ -1339,13 +1337,7 @@ def render_sidebar(
         disabled=not show_heatmap,
     )
 
-    st.sidebar.divider()
-    render_fastest_players(display_objects)
-    render_sprint_leaderboard(stats_data, display_objects)
-    render_possession_sidebar(current_time, st.session_state.possession_data, display_objects)
-
     return show_trails, show_heatmap, heatmap_selection
-
 
 def emit_due_match_events(current_time: float | None) -> None:
     """Shows toast notifications for metadata events already reached."""
@@ -1375,6 +1367,281 @@ def initialize_session_state() -> None:
     if "possession_data" not in st.session_state:
         st.session_state.possession_data = load_possession_data()
 
+def render_fastest_players_page(display_objects: list[DisplayObject]) -> None:
+    """Renders the current-speed leaderboard in the analysis page."""
+    st.subheader("Fastest Players Current")
+
+    players_only = [obj for obj in display_objects if obj["type"] == "player"]
+    fastest_players = sorted(
+        players_only,
+        key=lambda player: player.get("speed_kmh", 0.0),
+        reverse=True,
+    )[:5]
+
+    if not fastest_players:
+        st.write("No player data available yet.")
+        return
+
+    for index, player in enumerate(fastest_players, start=1):
+        speed = float(player.get("speed_kmh", 0.0))
+        intensity = describe_running_intensity(speed)
+        st.markdown(
+            f"**{index}. {player['name']}** ({player['team']})  \n"
+            f"{speed:.1f} km/h - {intensity}"
+        )
+
+
+def render_sprint_leaderboard_page(
+    stats_data: JsonDict | None,
+    display_objects: list[DisplayObject],
+) -> None:
+    """Renders the rolling sprint-distance leaderboard in the analysis page."""
+    st.subheader("🔥 Top Sprinters Last 60s")
+
+    if not stats_data or "stats" not in stats_data:
+        st.write("Waiting for rolling stats data...")
+        return
+
+    stats_dict = stats_data["stats"]
+    sprint_leaderboard: list[JsonDict] = []
+
+    for player in [obj for obj in display_objects if obj["type"] == "player"]:
+        total_sprint_distance = 0.0
+
+        for sid in player["sids"]:
+            sid_stats = stats_dict.get(str(sid), {})
+            total_sprint_distance += sid_stats.get("Sprint", {}).get(
+                "distance_1m",
+                0.0,
+            )
+
+        if total_sprint_distance > 0:
+            sprint_leaderboard.append(
+                {
+                    "name": player["name"],
+                    "team": player["team"],
+                    "distance": total_sprint_distance,
+                }
+            )
+
+    sprint_leaderboard.sort(key=lambda item: item["distance"], reverse=True)
+
+    if not sprint_leaderboard:
+        st.write("No sprints detected in the last minute.")
+        return
+
+    for index, leader in enumerate(sprint_leaderboard[:5], start=1):
+        st.markdown(
+            f"**{index}. {leader['name']}** ({leader['team']})  \n"
+            f"**{leader['distance']:.1f} meters** sprinted"
+        )
+
+
+def render_possession_chart_page(
+    team_possession: dict[str, float],
+    title: str,
+    chart_key: str,
+) -> None:
+    """Renders a possession pie chart in the analysis page."""
+    st.subheader(title)
+
+    names = [TEAM_A, TEAM_B, LOOSE_BALL]
+    values = [team_possession.get(name, 0.0) for name in names]
+    visible_items = [
+        (name, value)
+        for name, value in zip(names, values, strict=True)
+        if value > 0
+    ]
+
+    if not visible_items:
+        st.write("Waiting for first possession...")
+        return
+
+    visible_names = [item[0] for item in visible_items]
+    visible_values = [item[1] for item in visible_items]
+
+    pie_fig = px.pie(
+        values=visible_values,
+        names=visible_names,
+        color=visible_names,
+        color_discrete_map={
+            TEAM_A: "royalblue",
+            TEAM_B: "tomato",
+            LOOSE_BALL: "lightgray",
+        },
+        height=300,
+    )
+    pie_fig.update_layout(
+        margin={"t": 0, "b": 0, "l": 0, "r": 0},
+        showlegend=True,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    pie_fig.update_traces(textposition="inside", textinfo="percent+label")
+
+    st.plotly_chart(
+        pie_fig,
+        use_container_width=True,
+        key=chart_key,
+    )
+
+
+def render_time_on_ball_page(cumulative_possession: dict[str, float]) -> None:
+    """Renders the player time-on-ball leaderboard in the analysis page."""
+    st.subheader("⏱️ Time on Ball")
+
+    sorted_possession = sorted(
+        cumulative_possession.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    if not sorted_possession:
+        st.write("No possessions yet.")
+        return
+
+    for index, (player, possession_seconds) in enumerate(
+        sorted_possession[:10],
+        start=1,
+    ):
+        st.markdown(
+            f"**{index}. {player}** ({get_player_team(player)})  \n"
+            f"{format_possession_duration(possession_seconds)}"
+        )
+
+
+def render_possession_analysis_page(
+    current_time: float | None,
+    possession_data: PossessionData,
+    display_objects: list[DisplayObject],
+) -> None:
+    """Renders possession analysis in the analysis page."""
+    current_possessors, cumulative_possession, match_team_possession = (
+        calculate_possession_state(current_time, possession_data)
+    )
+    _, _, rolling_team_possession = calculate_possession_state(
+        current_time,
+        possession_data,
+        ROLLING_POSSESSION_WINDOW_SECONDS,
+    )
+
+    st.header("Possession Analysis")
+
+    current_column, estimate_column = st.columns(2)
+
+    with current_column:
+        st.subheader("Official Possession")
+
+        if len(current_possessors) == 1:
+            possessor = current_possessors[0]
+            st.success(
+                f"⚽ {possessor} ({get_player_team(possessor)})"
+            )
+        elif len(current_possessors) > 1:
+            st.warning(
+                "Possession conflict: " + ", ".join(current_possessors)
+            )
+        else:
+            st.info(f"None ({LOOSE_BALL})")
+
+    with estimate_column:
+        st.subheader("Tracking Estimate")
+
+        estimate = estimate_tracking_possession(display_objects)
+        possessor = estimate["possessor"]
+        distance_m = estimate["distance_m"]
+        confidence = estimate["confidence"]
+
+        if possessor:
+            st.info(
+                f"Estimated: **{possessor}** ({estimate['team']})  \n"
+                f"Distance to ball: {distance_m:.2f}m  \n"
+                f"Confidence: {confidence}"
+            )
+        elif distance_m is not None:
+            st.info(
+                f"Estimated: **None** ({LOOSE_BALL})  \n"
+                f"Nearest distance: {distance_m:.2f}m"
+            )
+        else:
+            st.info("Estimated: unavailable")
+
+        if len(current_possessors) == 1:
+            official_possessor = current_possessors[0]
+
+            if possessor == official_possessor:
+                st.success("Metadata and tracking estimate agree.")
+            elif possessor:
+                st.warning(
+                    f"Metadata/tracking differ: official is "
+                    f"{official_possessor}, estimate is {possessor}."
+                )
+
+    chart_column, rolling_column = st.columns(2)
+
+    with chart_column:
+        render_possession_chart_page(
+            match_team_possession,
+            "📊 Match Possession %",
+            "analysis_match_possession_chart",
+        )
+
+    with rolling_column:
+        render_possession_chart_page(
+            rolling_team_possession,
+            f"📊 Possession Last {int(ROLLING_POSSESSION_WINDOW_SECONDS)}s",
+            "analysis_rolling_possession_chart",
+        )
+
+    render_time_on_ball_page(cumulative_possession)
+
+def render_analysis_page(
+    state: JsonDict,
+    display_objects: list[DisplayObject],
+    stats_data: JsonDict | None,
+    current_time: float | None,
+) -> None:
+    """Renders the dedicated match-analysis page."""
+    raw_positions = state.get("positions", [])
+    players_only = [obj for obj in display_objects if obj["type"] == "player"]
+
+    st.header("Match Analysis")
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Visible objects", len(display_objects))
+    metric_columns[1].metric("Raw sensors", len(raw_positions))
+    metric_columns[2].metric("Match time", format_match_time(current_time))
+    metric_columns[3].metric("Half", get_current_half(raw_positions) or "-")
+    metric_columns[4].metric("Spark batch", state.get("batchId", "-"))
+
+    if players_only:
+        fastest_player = max(
+            players_only,
+            key=lambda player: player.get("speed_kmh", 0.0),
+        )
+        st.metric(
+            "Current fastest player",
+            fastest_player["name"],
+            f"{float(fastest_player.get('speed_kmh', 0.0)):.1f} km/h",
+        )
+
+    st.divider()
+
+    speed_column, sprint_column = st.columns(2)
+
+    with speed_column:
+        render_fastest_players_page(display_objects)
+
+    with sprint_column:
+        render_sprint_leaderboard_page(stats_data, display_objects)
+
+    st.divider()
+
+    render_possession_analysis_page(
+        current_time,
+        st.session_state.possession_data,
+        display_objects,
+    )
 
 def render_main_dashboard(
     state: JsonDict,
@@ -1436,13 +1703,24 @@ def main() -> None:
         current_time,
     )
 
-    render_main_dashboard(
+    live_tab, analysis_tab = st.tabs(["Live Tracking", "Analysis"])
+
+    with live_tab:
+        render_main_dashboard(
         state,
         display_objects,
         show_trails,
         show_heatmap,
         heatmap_selection,
-    )
+        )
+
+    with analysis_tab:
+        render_analysis_page(
+        state,
+        display_objects,
+        stats_data,
+        current_time,
+        )
 
     time.sleep(REFRESH_SECONDS)
     st.rerun()
