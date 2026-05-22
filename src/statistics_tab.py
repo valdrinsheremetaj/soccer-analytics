@@ -851,35 +851,3 @@ def render_statistics_tab(
             )
         else:
             st.write("Waiting for rolling statistics...")
-
-    st.divider()
-
-    systems_cols = st.columns(2)
-
-    with systems_cols[0]:
-        st.subheader("Streaming system metrics")
-        stream_metrics = load_stream_metrics()
-
-        if stream_metrics:
-            metric_cols = st.columns(4)
-            metric_cols[0].metric("Last input rows", stream_metrics.get("inputRows", "-"))
-            metric_cols[1].metric("Newest sensors", stream_metrics.get("newestSensorRows", "-"))
-            metric_cols[2].metric(
-                "Batch time",
-                f"{float(stream_metrics.get('processingMs', 0.0)):.1f} ms",
-            )
-            metric_cols[3].metric(
-                "Rows/s",
-                f"{float(stream_metrics.get('rowsPerSecond', 0.0)):.1f}",
-            )
-            st.json(stream_metrics, expanded=False)
-        else:
-            st.info("No stream_metrics.json yet.")
-
-    with systems_cols[1]:
-        st.subheader("Anomalies")
-
-        if anomalies:
-            st.warning("\n".join(f"- {warning}" for warning in anomalies))
-        else:
-            st.success("No obvious anomalies in the current state.")
