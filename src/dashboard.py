@@ -34,6 +34,8 @@ from src.config import (
     TEAM_B_PLAYERS,
 )
 
+from src.statistics_tab import render_statistics_tab
+
 JsonDict = dict[str, Any]
 Position = dict[str, Any]
 DisplayObject = dict[str, Any]
@@ -1366,6 +1368,8 @@ def initialize_session_state() -> None:
 
     if "possession_data" not in st.session_state:
         st.session_state.possession_data = load_possession_data()
+        
+    st.session_state.calculate_possession_state = calculate_possession_state
 
 def render_fastest_players_page(display_objects: list[DisplayObject]) -> None:
     """Renders the current-speed leaderboard in the analysis page."""
@@ -1703,7 +1707,7 @@ def main() -> None:
         current_time,
     )
 
-    live_tab, analysis_tab = st.tabs(["Live Tracking", "Analysis"])
+    live_tab, statistics_tab = st.tabs(["Live Tracking", "Statistics"])
 
     with live_tab:
         render_main_dashboard(
@@ -1714,12 +1718,12 @@ def main() -> None:
         heatmap_selection,
         )
 
-    with analysis_tab:
-        render_analysis_page(
-        state,
-        display_objects,
-        stats_data,
-        current_time,
+    with statistics_tab:
+        render_statistics_tab(
+        state=state,
+        display_objects=display_objects,
+        stats_data=stats_data,
+        possession_data=st.session_state.possession_data,
         )
 
     time.sleep(REFRESH_SECONDS)
