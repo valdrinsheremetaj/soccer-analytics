@@ -66,7 +66,17 @@ HEATMAP_DATA_X_MIN = -65000
 HEATMAP_DATA_X_MAX = 65000
 HEATMAP_DATA_Y_MIN = -34000
 HEATMAP_DATA_Y_MAX = 34000
+SOCCER_HEATMAP_COLORSCALE = [
+    [0.00, "rgba(0, 0, 255, 0.00)"],
+    [0.08, "rgba(0, 0, 255, 0.25)"],
+    [0.30, "rgba(0, 180, 255, 0.50)"],
+    [0.50, "rgba(0, 255, 100, 0.65)"],
+    [0.75, "rgba(255, 255, 0, 0.80)"],
+    [1.00, "rgba(255, 0, 0, 0.95)"],
+]
 
+HEATMAP_OPACITY = 0.85
+HEATMAP_ZMAX_PERCENTILE = 0.95
 # The raw tracking coordinates are transformed to match the pitch drawing in the
 # dashboard. Keep the same transform for dots and heat-map cells.
 POSITION_SCALE_X = 2.0
@@ -824,7 +834,11 @@ def get_heatmap_target_sids(selection: str) -> set[int] | None:
     ``None`` means that all available sensor ids should be included.
     """
     if selection == "All":
-        return None
+        return {
+        sid
+        for player in list(TEAM_A_PLAYERS.values()) + list(TEAM_B_PLAYERS.values())
+        for sid in player["feet"] + player["extra"]
+        }
 
     if selection == TEAM_A:
         return {
@@ -851,14 +865,34 @@ def get_heatmap_target_sids(selection: str) -> set[int] | None:
     return set()
 
 
+def get_heatmap_dimensions(heatmap_by_sid: JsonDict) -> tuple[int, int]:
+    """Returns heatmap dimensions from the first valid sensor grid."""
+    for grid in heatmap_by_sid.values():
+        if not isinstance(grid, list) or not grid:
+            continue
+
+        row_count = len(grid)
+        column_count = max(
+            (len(row) for row in grid if isinstance(row, list)),
+            default=0,
+        )
+
+        if row_count > 0 and column_count > 0:
+            return column_count, row_count
+
+    return HEATMAP_X_BINS, HEATMAP_Y_BINS
+
+
 def combine_heatmap_grids(
     heatmap_by_sid: JsonDict,
     selection: str,
-) -> list[list[int]]:
+) -> list[list[float]]:
     """Combines per-sensor heat-map grids for the selected focus."""
     target_sids = get_heatmap_target_sids(selection)
+    column_count, row_count = get_heatmap_dimensions(heatmap_by_sid)
+
     combined_grid = [
-        [0 for _ in range(HEATMAP_X_BINS)] for _ in range(HEATMAP_Y_BINS)
+        [0.0 for _ in range(column_count)] for _ in range(row_count)
     ]
 
     for sid_text, grid in heatmap_by_sid.items():
@@ -870,12 +904,29 @@ def combine_heatmap_grids(
         if target_sids is not None and sid not in target_sids:
             continue
 
-        for row_index in range(min(HEATMAP_Y_BINS, len(grid))):
+        for row_index in range(min(row_count, len(grid))):
             row = grid[row_index]
-            for col_index in range(min(HEATMAP_X_BINS, len(row))):
-                combined_grid[row_index][col_index] += row[col_index]
+
+            for column_index in range(min(column_count, len(row))):
+                combined_grid[row_index][column_index] += float(row[column_index])
 
     return combined_grid
+
+
+def get_heatmap_zmax(combined_grid: list[list[float]]) -> float:
+    """Returns a robust upper value for heatmap coloring."""
+    values = sorted(
+        value
+        for row in combined_grid
+        for value in row
+        if value > 0
+    )
+
+    if not values:
+        return 1.0
+
+    percentile_index = int((len(values) - 1) * HEATMAP_ZMAX_PERCENTILE)
+    return max(1.0, values[percentile_index])
 
 
 def add_heatmap_trace(
@@ -883,46 +934,57 @@ def add_heatmap_trace(
     state: JsonDict,
     heatmap_selection: str,
 ) -> None:
-    """Adds the optional heat-map overlay to the pitch figure."""
+    """Adds a smooth football-style heat-map overlay to the pitch figure."""
     heatmap_by_sid = state.get("heatmap_by_sid")
     if not heatmap_by_sid:
         return
 
     combined_grid = combine_heatmap_grids(heatmap_by_sid, heatmap_selection)
 
-    raw_x_width = (HEATMAP_DATA_X_MAX - HEATMAP_DATA_X_MIN) / HEATMAP_X_BINS
-    raw_y_height = (HEATMAP_DATA_Y_MAX - HEATMAP_DATA_Y_MIN) / HEATMAP_Y_BINS
+    row_count = len(combined_grid)
+    column_count = len(combined_grid[0]) if combined_grid else 0
 
-    raw_x_edges = [
-        HEATMAP_DATA_X_MIN + index * raw_x_width
-        for index in range(HEATMAP_X_BINS + 1)
+    if row_count == 0 or column_count == 0:
+        return
+
+    raw_x_width = (HEATMAP_DATA_X_MAX - HEATMAP_DATA_X_MIN) / column_count
+    raw_y_height = (HEATMAP_DATA_Y_MAX - HEATMAP_DATA_Y_MIN) / row_count
+
+    raw_x_centers = [
+        HEATMAP_DATA_X_MIN + (index + 0.5) * raw_x_width
+        for index in range(column_count)
     ]
-    raw_y_edges = [
-        HEATMAP_DATA_Y_MIN + index * raw_y_height
-        for index in range(HEATMAP_Y_BINS + 1)
+    raw_y_centers = [
+        HEATMAP_DATA_Y_MIN + (index + 0.5) * raw_y_height
+        for index in range(row_count)
     ]
 
-    ui_x_edges = [
-        y_edge * POSITION_SCALE_X + HEATMAP_OFFSET_X for y_edge in raw_y_edges
+    ui_x_centers = [
+        y_center * POSITION_SCALE_X + HEATMAP_OFFSET_X
+        for y_center in raw_y_centers
     ]
-    ui_y_edges = [
-        x_edge * POSITION_SCALE_Y + HEATMAP_OFFSET_Y for x_edge in raw_x_edges
+    ui_y_centers = [
+        x_center * POSITION_SCALE_Y + HEATMAP_OFFSET_Y
+        for x_center in raw_x_centers
     ]
 
-    # Plotly expects the heat-map matrix orientation to match the generated
-    # boundary vectors, so the grid is transposed before rendering.
+    # The dashboard pitch swaps raw x/y for display orientation, so the heatmap
+    # grid is transposed before rendering.
     transposed_grid = [
-        [combined_grid[row][col] for row in range(HEATMAP_Y_BINS)]
-        for col in range(HEATMAP_X_BINS)
+        [combined_grid[row][column] for row in range(row_count)]
+        for column in range(column_count)
     ]
 
     fig.add_trace(
         go.Heatmap(
             z=transposed_grid,
-            x=ui_x_edges,
-            y=ui_y_edges,
-            colorscale="Inferno",
-            opacity=0.6,
+            x=ui_x_centers,
+            y=ui_y_centers,
+            zmin=0,
+            zmax=get_heatmap_zmax(combined_grid),
+            colorscale=SOCCER_HEATMAP_COLORSCALE,
+            opacity=HEATMAP_OPACITY,
+            zsmooth="best",
             showscale=False,
             name=f"Heat Map ({heatmap_selection})",
             hoverinfo="none",

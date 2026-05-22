@@ -50,8 +50,8 @@ SHUFFLE_PARTITIONS = "4"
 WATERMARK_DELAY = "5 seconds"
 ROLLING_WINDOW_DURATION = "1 minute"
 
-HEATMAP_COLUMNS = 13
-HEATMAP_ROWS = 8
+HEATMAP_COLUMNS = 80
+HEATMAP_ROWS = 50
 
 BALL_SAMPLE_INTERVAL_SECONDS = 0.0005
 PLAYER_SAMPLE_INTERVAL_SECONDS = 0.005
@@ -337,9 +337,16 @@ def create_positions_batch_processor(
             position = row_to_position(row)
             latest_positions[int(position["sid"])] = position
 
-        # The heatmap uses the currently visible sensor positions as a simple
-        # approximation of time spent in each zone.
-        analyzer.update_from_positions(list(latest_positions.values()))
+        # The heatmap uses all positions from the current micro-batch. This
+        # gives a smoother and more realistic movement-density map than using
+        # only the latest visible position per sensor.
+        batch_positions = [row_to_position(row) for row in batch_df.collect()]
+        heatmap_positions = [
+            position
+            for position in batch_positions
+            if int(position["sid"]) not in BALL_SENSOR_IDS
+        ]
+        analyzer.update_from_positions(heatmap_positions)
 
         payload = build_positions_payload(batch_id, latest_positions, analyzer)
         write_json_atomic(POSITIONS_FILE, payload)
