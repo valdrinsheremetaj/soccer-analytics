@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import math
 from pathlib import Path
 from typing import Any
 
@@ -47,22 +48,22 @@ POSSESSION_PATH = METADATA_PATH / "Ball Possession"
 ALL_BALL_IDS = {4, 8, 10, 12}
 
 REFRESH_SECONDS = 0.15
-SECOND_HALF_OFFSET_SECONDS = 1_800.0
+SECOND_HALF_OFFSET_SECONDS = 1800.0
 TRAIL_BATCH_LIMIT = 5
 
 HEATMAP_X_BINS = 13
 HEATMAP_Y_BINS = 8
-HEATMAP_DATA_X_MIN = -65_000
-HEATMAP_DATA_X_MAX = 65_000
-HEATMAP_DATA_Y_MIN = -34_000
-HEATMAP_DATA_Y_MAX = 34_000
+HEATMAP_DATA_X_MIN = -65000
+HEATMAP_DATA_X_MAX = 65000
+HEATMAP_DATA_Y_MIN = -34000
+HEATMAP_DATA_Y_MAX = 34000
 
 # The raw tracking coordinates are transformed to match the pitch drawing in the
 # dashboard. Keep the same transform for dots and heat-map cells.
 POSITION_SCALE_X = 2.0
 POSITION_SCALE_Y = 1.0
-POSITION_OFFSET_X = -6_000.0
-POSITION_OFFSET_Y = -31_000.0
+POSITION_OFFSET_X = -6000.0
+POSITION_OFFSET_Y = -31000.0
 HEATMAP_OFFSET_X = 0.0
 HEATMAP_OFFSET_Y = POSITION_OFFSET_Y
 
@@ -88,6 +89,13 @@ SPRINT_SPEED_KMH = 24.0
 HIGH_SPEED_RUN_KMH = 14.0
 LOW_SPEED_RUN_KMH = 11.0
 TROT_SPEED_KMH = 1.0
+
+LOOSE_BALL = "Loose Ball"
+ROLLING_POSSESSION_WINDOW_SECONDS = 60.0
+
+POSSESSION_HIGH_CONFIDENCE_MM = 1500.0
+POSSESSION_MEDIUM_CONFIDENCE_MM = 3000.0
+POSSESSION_LOW_CONFIDENCE_MM = 5000.0
 
 LOGGER = logging.getLogger(__name__)
 
@@ -974,17 +982,54 @@ def get_player_team(player_name: str) -> str:
     return ""
 
 
+def get_team_possession_template() -> dict[str, float]:
+    """Returns an empty team-possession dictionary."""
+    return {TEAM_A: 0.0, TEAM_B: 0.0, LOOSE_BALL: 0.0}
+
+
+def calculate_interval_overlap(
+    interval_start: float,
+    interval_end: float,
+    window_start: float,
+    window_end: float,
+) -> float:
+    """Returns the overlap duration between one interval and one time window."""
+    overlap_start = max(interval_start, window_start)
+    overlap_end = min(interval_end, window_end)
+    return max(0.0, overlap_end - overlap_start)
+
+
 def calculate_possession_state(
     current_time: float | None,
     possession_data: PossessionData,
-) -> tuple[str | None, dict[str, float], dict[str, float]]:
-    """Calculates current and cumulative possession up to current time."""
-    current_possessor: str | None = None
-    cumulative_possession: dict[str, float] = {}
-    team_possession = {TEAM_A: 0.0, TEAM_B: 0.0}
+    window_seconds: float | None = None,
+) -> tuple[list[str], dict[str, float], dict[str, float]]:
+    """Calculates current, player, and team possession.
+
+    Args:
+        current_time: Current match time in seconds.
+        possession_data: Metadata possession intervals by player.
+        window_seconds: Optional rolling window size. If ``None``, possession is
+            calculated from the beginning of the match.
+
+    Returns:
+        Tuple containing current possessors, player possession durations, and
+        team possession durations.
+    """
+    current_possessors: list[str] = []
+    player_possession: dict[str, float] = {}
+    team_possession = get_team_possession_template()
 
     if current_time is None:
-        return current_possessor, cumulative_possession, team_possession
+        return current_possessors, player_possession, team_possession
+
+    window_end = current_time
+    window_start = (
+        0.0
+        if window_seconds is None
+        else max(0.0, current_time - window_seconds)
+    )
+    active_duration = max(0.0, window_end - window_start)
 
     for player, intervals in possession_data.items():
         player_total = 0.0
@@ -994,37 +1039,205 @@ def calculate_possession_state(
             end = interval["end"]
 
             if start <= current_time <= end:
-                current_possessor = player
+                current_possessors.append(player)
 
-            if start < current_time:
-                player_total += min(end, current_time) - start
+            player_total += calculate_interval_overlap(
+                start,
+                end,
+                window_start,
+                window_end,
+            )
 
         if player_total <= 0:
             continue
 
-        cumulative_possession[player] = player_total
+        player_possession[player] = player_total
         player_team = get_player_team(player)
 
         if player_team in team_possession:
             team_possession[player_team] += player_total
 
-    return current_possessor, cumulative_possession, team_possession
+    known_possession_time = team_possession[TEAM_A] + team_possession[TEAM_B]
+    team_possession[LOOSE_BALL] = max(0.0, active_duration - known_possession_time)
+
+    return current_possessors, player_possession, team_possession
 
 
-def render_team_possession_chart(team_possession: dict[str, float]) -> None:
-    """Renders the team possession pie chart."""
-    st.sidebar.subheader("📊 Team Possession %")
+def calculate_object_distance(
+    first_object: DisplayObject,
+    second_object: DisplayObject,
+) -> float:
+    """Returns the raw tracking distance between two display objects."""
+    return math.hypot(
+        float(first_object["x"]) - float(second_object["x"]),
+        float(first_object["y"]) - float(second_object["y"]),
+    )
 
-    total_time = team_possession[TEAM_A] + team_possession[TEAM_B]
-    if total_time <= 0:
+
+def get_latest_ball(display_objects: list[DisplayObject]) -> DisplayObject | None:
+    """Returns the latest visible ball object."""
+    ball_objects = [obj for obj in display_objects if obj["type"] == "ball"]
+
+    if not ball_objects:
+        return None
+
+    return max(ball_objects, key=lambda ball: int(ball.get("ts") or 0))
+
+
+def describe_possession_confidence(distance_mm: float) -> str:
+    """Returns a possession confidence label based on distance to the ball."""
+    if distance_mm <= POSSESSION_HIGH_CONFIDENCE_MM:
+        return "High"
+    if distance_mm <= POSSESSION_MEDIUM_CONFIDENCE_MM:
+        return "Medium"
+    if distance_mm <= POSSESSION_LOW_CONFIDENCE_MM:
+        return "Low"
+    return "Loose Ball"
+
+
+def estimate_tracking_possession(
+    display_objects: list[DisplayObject],
+) -> JsonDict:
+    """Estimates possession from live positions.
+
+    The estimate uses a simple nearest-player-to-ball rule. It is intentionally
+    lightweight so it can run inside the Streamlit refresh loop.
+    """
+    ball = get_latest_ball(display_objects)
+    players = [obj for obj in display_objects if obj["type"] == "player"]
+
+    if ball is None or not players:
+        return {
+            "possessor": None,
+            "team": "",
+            "distance_m": None,
+            "confidence": "Unavailable",
+        }
+
+    closest_player = min(
+        players,
+        key=lambda player: calculate_object_distance(player, ball),
+    )
+    distance_mm = calculate_object_distance(closest_player, ball)
+    confidence = describe_possession_confidence(distance_mm)
+
+    if confidence == "Loose Ball":
+        return {
+            "possessor": None,
+            "team": "",
+            "distance_m": distance_mm / 1_000,
+            "confidence": confidence,
+        }
+
+    return {
+        "possessor": closest_player["name"],
+        "team": closest_player["team"],
+        "distance_m": distance_mm / 1_000,
+        "confidence": confidence,
+    }
+
+
+def format_possession_duration(seconds: float) -> str:
+    """Formats a possession duration for compact sidebar display."""
+    if seconds >= 60:
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds % 60
+        return f"{minutes}m {remaining_seconds:.0f}s"
+
+    return f"{seconds:.1f} seconds"
+
+
+def render_current_possession(current_possessors: list[str]) -> None:
+    """Renders the official metadata-based current possession."""
+    if len(current_possessors) == 1:
+        possessor = current_possessors[0]
+        st.sidebar.success(
+            f"⚽ **Official Possession:** {possessor} "
+            f"({get_player_team(possessor)})"
+        )
+        return
+
+    if len(current_possessors) > 1:
+        st.sidebar.warning(
+            "⚽ **Official Possession Conflict:** "
+            + ", ".join(current_possessors)
+        )
+        return
+
+    st.sidebar.info(f"⚽ **Official Possession:** None ({LOOSE_BALL})")
+
+
+def render_tracking_possession_estimate(
+    display_objects: list[DisplayObject],
+    official_possessors: list[str],
+) -> None:
+    """Renders the live tracking-based possession estimate."""
+    estimate = estimate_tracking_possession(display_objects)
+    possessor = estimate["possessor"]
+    distance_m = estimate["distance_m"]
+    confidence = estimate["confidence"]
+
+    st.sidebar.caption("Tracking estimate")
+
+    if possessor:
+        st.sidebar.info(
+            f"Estimated: **{possessor}** ({estimate['team']})  \n"
+            f"Distance to ball: {distance_m:.2f}m  \n"
+            f"Confidence: {confidence}"
+        )
+    elif distance_m is not None:
+        st.sidebar.info(
+            f"Estimated: **None** ({LOOSE_BALL})  \n"
+            f"Nearest distance: {distance_m:.2f}m"
+        )
+    else:
+        st.sidebar.info("Estimated: unavailable")
+
+    if len(official_possessors) != 1:
+        return
+
+    official_possessor = official_possessors[0]
+
+    if possessor == official_possessor:
+        st.sidebar.success("Metadata and tracking estimate agree.")
+    elif possessor:
+        st.sidebar.warning(
+            f"Metadata/tracking differ: official is {official_possessor}, "
+            f"estimate is {possessor}."
+        )
+
+
+def render_team_possession_chart(
+    team_possession: dict[str, float],
+    title: str,
+) -> None:
+    """Renders a team-possession pie chart including loose-ball time."""
+    st.sidebar.subheader(title)
+
+    names = [TEAM_A, TEAM_B, LOOSE_BALL]
+    values = [team_possession.get(name, 0.0) for name in names]
+    visible_items = [
+        (name, value)
+        for name, value in zip(names, values, strict=True)
+        if value > 0
+    ]
+
+    if not visible_items:
         st.sidebar.write("Waiting for first possession...")
         return
 
+    visible_names = [item[0] for item in visible_items]
+    visible_values = [item[1] for item in visible_items]
+
     pie_fig = px.pie(
-        values=[team_possession[TEAM_A], team_possession[TEAM_B]],
-        names=[TEAM_A, TEAM_B],
-        color=[TEAM_A, TEAM_B],
-        color_discrete_map={TEAM_A: "royalblue", TEAM_B: "tomato"},
+        values=visible_values,
+        names=visible_names,
+        color=visible_names,
+        color_discrete_map={
+            TEAM_A: "royalblue",
+            TEAM_B: "tomato",
+            LOOSE_BALL: "lightgray",
+        },
         height=200,
     )
     pie_fig.update_layout(
@@ -1058,30 +1271,38 @@ def render_time_on_ball(cumulative_possession: dict[str, float]) -> None:
     ):
         st.sidebar.markdown(
             f"**{index}. {player}** ({get_player_team(player)})  \n"
-            f"{possession_seconds:.1f} seconds"
+            f"{format_possession_duration(possession_seconds)}"
         )
 
 
 def render_possession_sidebar(
     current_time: float | None,
-    possession_data: PossessionData,
+    possession_data: st.session_state.possession_data,
+    display_objects: list[DisplayObject],
 ) -> None:
     """Renders all possession-related sidebar elements."""
-    current_possessor, cumulative_possession, team_possession = (
+    current_possessors, cumulative_possession, match_team_possession = (
         calculate_possession_state(current_time, possession_data)
+    )
+    _, _, rolling_team_possession = calculate_possession_state(
+        current_time,
+        possession_data,
+        ROLLING_POSSESSION_WINDOW_SECONDS,
     )
 
     st.sidebar.divider()
 
-    if current_possessor:
-        st.sidebar.success(
-            f"⚽ **In Possession:** {current_possessor} "
-            f"({get_player_team(current_possessor)})"
-        )
-    else:
-        st.sidebar.info("⚽ **In Possession:** None (Loose Ball)")
+    render_current_possession(current_possessors)
+    render_tracking_possession_estimate(display_objects, current_possessors)
 
-    render_team_possession_chart(team_possession)
+    render_team_possession_chart(
+        match_team_possession,
+        "📊 Match Possession %",
+    )
+    render_team_possession_chart(
+        rolling_team_possession,
+        f"📊 Possession Last {int(ROLLING_POSSESSION_WINDOW_SECONDS)}s",
+    )
     render_time_on_ball(cumulative_possession)
 
 
