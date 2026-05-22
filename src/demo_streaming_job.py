@@ -168,9 +168,27 @@ def filter_valid_positions(position_stream: DataFrame) -> DataFrame:
         & (col("y") >= FIELD_Y_MIN)
         & (col("y") <= FIELD_Y_MAX)
     )
+    
+    is_ball_sensor = col("sid").isin(BALL_SENSOR_IDS)
 
-    return position_stream.where(required_columns_present & inside_field_bounds)
+    return position_stream.where(required_columns_present & inside_field_bounds | is_ball_sensor)
 
+def is_position_inside_field(position: JsonDict) -> bool:
+    """Returns True if a position is inside the pitch bounds."""
+    return (
+        FIELD_X_MIN <= float(position["x"]) <= FIELD_X_MAX
+        and FIELD_Y_MIN <= float(position["y"]) <= FIELD_Y_MAX
+    )
+
+
+def should_keep_latest_position(position: JsonDict) -> bool:
+    """Returns True if a position should remain visible in dashboard state."""
+    sensor_id = int(position["sid"])
+
+    if sensor_id in BALL_SENSOR_IDS:
+        return is_position_inside_field(position)
+
+    return True
 
 def classify_intensity(speed_column: F.Column) -> F.Column:
     """Classify speed into simple running-intensity zones.
@@ -335,7 +353,12 @@ def create_positions_batch_processor(
 
         for row in newest_per_sensor.collect():
             position = row_to_position(row)
-            latest_positions[int(position["sid"])] = position
+            sensor_id = int(position["sid"])
+
+        if should_keep_latest_position(position):
+            latest_positions[sensor_id] = position
+        elif sensor_id in latest_positions:
+            del latest_positions[sensor_id]
 
         # The heatmap uses all positions from the current micro-batch. This
         # gives a smoother and more realistic movement-density map than using

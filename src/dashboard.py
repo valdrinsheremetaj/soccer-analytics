@@ -55,6 +55,8 @@ POSSESSION_PATHS = [
 ]
 
 ALL_BALL_IDS = {4, 8, 10, 12}
+FIRST_BALL_SID = 4
+FIRST_BALL_UNTIL_SECOND = 10 * 60
 
 REFRESH_SECONDS = 0.15
 SECOND_HALF_OFFSET_SECONDS = 1800.0
@@ -599,6 +601,12 @@ def average_positions(
         / len(used_positions),
     }
 
+def is_display_object_inside_field(display_object: DisplayObject) -> bool:
+    """Returns True if a dashboard object is inside the pitch bounds."""
+    return (
+        FIELD_X_MIN <= float(display_object["x"]) <= FIELD_X_MAX
+        and FIELD_Y_MIN <= float(display_object["y"]) <= FIELD_Y_MAX
+    )
 
 def get_ball_objects(positions_by_sid: dict[int, Position]) -> list[DisplayObject]:
     """Returns display objects for all currently visible ball sensors."""
@@ -609,25 +617,26 @@ def get_ball_objects(positions_by_sid: dict[int, Position]) -> list[DisplayObjec
             continue
 
         position = positions_by_sid[sid]
-        ball_objects.append(
-            {
-                "name": f"Ball {sid}",
-                "label": f"Ball {sid}",
-                "type": "ball",
-                "team": None,
-                "role": None,
-                "x": float(position["x"]),
-                "y": float(position["y"]),
-                "ts": int(position["ts"]),
-                "matchSecond": (
-                    float(position["matchSecond"])
-                    if position.get("matchSecond") is not None
-                    else None
-                ),
-                "sids": [sid],
-                "speed_kmh": float(position.get("speed_kmh", 0.0)),
-            }
-        )
+        ball_object = {
+            "name": f"Ball {sid}",
+            "label": f"Ball {sid}",
+            "type": "ball",
+            "team": None,
+            "role": None,
+            "x": float(position["x"]),
+            "y": float(position["y"]),
+            "ts": int(position["ts"]),
+            "matchSecond": (
+                float(position["matchSecond"])
+                if position.get("matchSecond") is not None
+                else None
+            ),
+            "sids": [sid],
+            "speed_kmh": float(position.get("speed_kmh", 0.0)),
+        }
+
+        if is_display_object_inside_field(ball_object):
+            ball_objects.append(ball_object)
 
     return ball_objects
 
@@ -1399,8 +1408,12 @@ def resolve_player_name(raw_player_name: str) -> str:
 
 
 def get_latest_ball(display_objects: list[DisplayObject]) -> DisplayObject | None:
-    """Returns the latest visible ball object."""
-    ball_objects = [obj for obj in display_objects if obj["type"] == "ball"]
+    """Returns the latest visible ball object inside the field."""
+    ball_objects = [
+        obj
+        for obj in display_objects
+        if obj["type"] == "ball" and is_display_object_inside_field(obj)
+    ]
 
     if not ball_objects:
         return None
