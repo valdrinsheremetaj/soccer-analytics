@@ -428,7 +428,17 @@ def start_streaming_queries(
     LOGGER.info("Started positions query: %s", positions_query.id)
     LOGGER.info("Started rolling stats query: %s", stats_query.id)
 
-    positions_query.sparkSession.streams.awaitAnyTermination()
+    while positions_query.isActive and stats_query.isActive:
+        time.sleep(1)
+
+    positions_exception = positions_query.exception()
+    stats_exception = stats_query.exception()
+
+    if positions_exception is not None:
+        raise RuntimeError(f"Positions query failed: {positions_exception}")
+
+    if stats_exception is not None:
+        raise RuntimeError(f"Stats query failed: {stats_exception}")
 
 
 def main() -> None:
