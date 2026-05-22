@@ -24,7 +24,9 @@ from src.config import (
 
 
 APP_NAME = "Cleaned Soccer Game Data"
-SECOND_HALF_OFFSET_SECONDS = 1800.0
+SECOND_HALF_OFFSET_SECONDS = (
+    FIRST_HALF_END_TS - FIRST_HALF_START_TS
+) / TS_PER_SECOND
 MICRO_TO_BASE_UNIT = 1e-6
 METERS_PER_SECOND_TO_KMH = 3.6
 SPEED_SAMPLE_THRESHOLD_KMH = 5.0
@@ -119,16 +121,13 @@ def write_cleaned_data(cleaned_df: DataFrame, output_path: str) -> None:
     )
 
 
-def clean_full_game(show_validation_sample: bool = True) -> None:
+def clean_full_game() -> None:
     """Run the complete full-game cleaning pipeline."""
     spark_session = create_spark_session()
 
     try:
         raw_df = read_raw_game_data(spark_session)
         cleaned_df = build_cleaned_dataframe(raw_df)
-
-        if show_validation_sample:
-            show_speed_sample(cleaned_df)
 
         write_cleaned_data(cleaned_df, CLEAN_FULL_GAME_PATH)
         LOGGER.info("Cleaned data written to: %s", CLEAN_FULL_GAME_PATH)
