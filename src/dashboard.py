@@ -1210,6 +1210,7 @@ def render_tracking_possession_estimate(
 def render_team_possession_chart(
     team_possession: dict[str, float],
     title: str,
+    chart_key: str,
 ) -> None:
     """Renders a team-possession pie chart including loose-ball time."""
     st.sidebar.subheader(title)
@@ -1248,7 +1249,11 @@ def render_team_possession_chart(
     )
     pie_fig.update_traces(textposition="inside", textinfo="percent+label")
 
-    st.sidebar.plotly_chart(pie_fig, use_container_width=True)
+    st.sidebar.plotly_chart(
+        pie_fig,
+        use_container_width=True,
+        key=chart_key,
+    )
 
 
 def render_time_on_ball(cumulative_possession: dict[str, float]) -> None:
@@ -1296,12 +1301,14 @@ def render_possession_sidebar(
     render_tracking_possession_estimate(display_objects, current_possessors)
 
     render_team_possession_chart(
-        match_team_possession,
-        "📊 Match Possession %",
-    )
+    match_team_possession,
+    "📊 Match Possession %",
+    "match_possession_chart",
+        )
     render_team_possession_chart(
-        rolling_team_possession,
-        f"📊 Possession Last {int(ROLLING_POSSESSION_WINDOW_SECONDS)}s",
+    rolling_team_possession,
+    f"📊 Possession Last {int(ROLLING_POSSESSION_WINDOW_SECONDS)}s",
+    "rolling_possession_chart",
     )
     render_time_on_ball(cumulative_possession)
 
